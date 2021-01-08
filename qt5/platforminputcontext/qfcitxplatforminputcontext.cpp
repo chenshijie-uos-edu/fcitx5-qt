@@ -304,7 +304,7 @@ void QFcitxPlatformInputContext::update(Qt::InputMethodQueries queries) {
                     anchor = cursor;
 
                 // adjust it to real character size
-                QVector<uint> tempUCS4 = text.left(cursor).toUcs4();
+                QVector<unsigned int> tempUCS4 = text.left(cursor).toUcs4();
                 cursor = tempUCS4.size();
                 tempUCS4 = text.left(anchor).toUcs4();
                 anchor = tempUCS4.size();
@@ -366,7 +366,7 @@ void QFcitxPlatformInputContext::setFocusObject(QObject *object) {
                 if (window != lastWindow_) {
                     return;
                 }
-                if (auto *proxy = validICByWindow(window.data())) {
+                if (validICByWindow(window.data())) {
                     cursorRectChanged();
                 }
             },
@@ -451,6 +451,7 @@ void QFcitxPlatformInputContext::createInputContextFinished(
     flag |= FcitxCapabilityFlag_ClientUnfocusCommit;
     flag |= FcitxCapabilityFlag_GetIMInfoOnFocus;
     flag |= FcitxCapabilityFlag_KeyEventOrderFix;
+    flag |= FcitxCapabilityFlag_ReportKeyRepeat;
     useSurroundingText_ =
         get_boolean_env("FCITX_QT_ENABLE_SURROUNDING_TEXT", true);
     if (useSurroundingText_) {
@@ -542,7 +543,7 @@ void QFcitxPlatformInputContext::updateFormattedPreedit(
 }
 
 void QFcitxPlatformInputContext::deleteSurroundingText(int offset,
-                                                       uint _nchar) {
+                                                       unsigned int _nchar) {
     QObject *input = qApp->focusObject();
     if (!input)
         return;
@@ -576,7 +577,7 @@ void QFcitxPlatformInputContext::deleteSurroundingText(int offset,
 
     // validates
     if (nchar >= 0 && cursor + offset >= 0 &&
-        cursor + offset + nchar < static_cast<int>(ucsText.size())) {
+        cursor + offset + nchar <= static_cast<int>(ucsText.size())) {
         // order matters
         auto replacedChars = ucsText.substr(cursor + offset, nchar);
         nchar = QString::fromUcs4(replacedChars.data(), replacedChars.size())
@@ -587,7 +588,7 @@ void QFcitxPlatformInputContext::deleteSurroundingText(int offset,
             start = cursor;
             len = offset;
         } else {
-            start = cursor;
+            start = cursor + offset;
             len = -offset;
         }
 
@@ -600,8 +601,8 @@ void QFcitxPlatformInputContext::deleteSurroundingText(int offset,
     }
 }
 
-void QFcitxPlatformInputContext::forwardKey(uint keyval, uint state,
-                                            bool type) {
+void QFcitxPlatformInputContext::forwardKey(unsigned int keyval,
+                                            unsigned int state, bool type) {
     auto proxy = qobject_cast<FcitxQtInputContextProxy *>(sender());
     if (!proxy) {
         return;
@@ -673,14 +674,23 @@ void QFcitxPlatformInputContext::createICData(QWindow *w) {
     }
 }
 
-QKeyEvent *QFcitxPlatformInputContext::createKeyEvent(uint keyval, uint state,
+QKeyEvent *QFcitxPlatformInputContext::createKeyEvent(unsigned int keyval,
+                                                      unsigned int state,
                                                       bool isRelease,
                                                       const QKeyEvent *event) {
     QKeyEvent *newEvent = nullptr;
     if (event && event->nativeVirtualKey() == keyval &&
         event->nativeModifiers() == state &&
         isRelease == (event->type() == QEvent::KeyRelease)) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        newEvent = new QKeyEvent(
+            event->type(), event->key(), event->modifiers(),
+            event->nativeScanCode(), event->nativeVirtualKey(),
+            event->nativeModifiers(), event->text(), event->isAutoRepeat(),
+            event->count(), event->device());
+#else
         newEvent = new QKeyEvent(*event);
+#endif
     } else {
         Qt::KeyboardModifiers qstate = Qt::NoModifier;
 
@@ -781,9 +791,13 @@ bool QFcitxPlatformInputContext::filterEvent(const QEvent *event) {
         update(Qt::ImHints);
         proxy->focusIn();
 
-        auto reply = proxy->processKeyEvent(
-            keyval, keycode, state, isRelease,
-            QDateTime::currentDateTime().toSecsSinceEpoch());
+        auto stateToFcitx = state;
+        if (keyEvent->isAutoRepeat()) {
+            // KeyState::Repeat
+            stateToFcitx |= (1u << 31);
+        }
+        auto reply = proxy->processKeyEvent(keyval, keycode, stateToFcitx,
+                                            isRelease, keyEvent->timestamp());
 
         if (Q_UNLIKELY(syncMode_)) {
             reply.waitForFinished();
@@ -850,15 +864,24 @@ void QFcitxPlatformInputContext::processKeyEventFinished(
         if (proxy) {
             FcitxQtICData &data = *static_cast<FcitxQtICData *>(
                 proxy->property("icData").value<void *>());
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+            data.event = std::make_unique<QKeyEvent>(
+                keyEvent.type(), keyEvent.key(), keyEvent.modifiers(),
+                keyEvent.nativeScanCode(), keyEvent.nativeVirtualKey(),
+                keyEvent.nativeModifiers(), keyEvent.text(),
+                keyEvent.isAutoRepeat(), keyEvent.count(), keyEvent.device());
+#else
             data.event = std::make_unique<QKeyEvent>(keyEvent);
+#endif
         }
     }
 
     delete watcher;
 }
 
-bool QFcitxPlatformInputContext::filterEventFallback(uint keyval, uint keycode,
-                                                     uint state,
+bool QFcitxPlatformInputContext::filterEventFallback(unsigned int keyval,
+                                                     unsigned int keycode,
+                                                     unsigned int state,
                                                      bool isRelease) {
     Q_UNUSED(keycode);
     if (processCompose(keyval, state, isRelease)) {
@@ -894,7 +917,8 @@ QFcitxPlatformInputContext::validICByWindow(QWindow *w) {
     return data.proxy;
 }
 
-bool QFcitxPlatformInputContext::processCompose(uint keyval, uint state,
+bool QFcitxPlatformInputContext::processCompose(unsigned int keyval,
+                                                unsigned int state,
                                                 bool isRelease) {
     Q_UNUSED(state);
 
@@ -914,14 +938,13 @@ bool QFcitxPlatformInputContext::processCompose(uint keyval, uint state,
     if (status == XKB_COMPOSE_NOTHING) {
         return 0;
     } else if (status == XKB_COMPOSE_COMPOSED) {
-        char buffer[] = {'\0', '\0', '\0', '\0', '\0', '\0', '\0'};
-        int length =
-            xkb_compose_state_get_utf8(xkbComposeState, buffer, sizeof(buffer));
+        std::array<char, 256> buffer;
+        int length = xkb_compose_state_get_utf8(xkbComposeState, buffer.data(),
+                                                buffer.size());
         xkb_compose_state_reset(xkbComposeState);
         if (length != 0) {
-            commitString(QString::fromUtf8(buffer));
+            commitString(QString::fromUtf8(buffer.data(), length));
         }
-
     } else if (status == XKB_COMPOSE_CANCELLED) {
         xkb_compose_state_reset(xkbComposeState);
     }

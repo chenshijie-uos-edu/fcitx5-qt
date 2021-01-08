@@ -242,7 +242,7 @@ void QFcitxInputContext::update() {
                     anchor = cursor;
 
                 // adjust it to real character size
-                QVector<uint> tempUCS4 = text.leftRef(cursor).toUcs4();
+                QVector<unsigned int> tempUCS4 = text.leftRef(cursor).toUcs4();
                 cursor = tempUCS4.size();
                 tempUCS4 = text.leftRef(anchor).toUcs4();
                 anchor = tempUCS4.size();
@@ -351,6 +351,7 @@ void QFcitxInputContext::createInputContextFinished(const QByteArray &uuid) {
     flag |= FcitxCapabilityFlag_ClientUnfocusCommit;
     flag |= FcitxCapabilityFlag_GetIMInfoOnFocus;
     flag |= FcitxCapabilityFlag_KeyEventOrderFix;
+    flag |= FcitxCapabilityFlag_ReportKeyRepeat;
     useSurroundingText_ =
         get_boolean_env("FCITX_QT_ENABLE_SURROUNDING_TEXT", true);
     if (useSurroundingText_)
@@ -436,7 +437,8 @@ void QFcitxInputContext::updateFormattedPreedit(
     update();
 }
 
-void QFcitxInputContext::deleteSurroundingText(int offset, uint _nchar) {
+void QFcitxInputContext::deleteSurroundingText(int offset,
+                                               unsigned int _nchar) {
     QWidget *input = qApp->focusWidget();
     if (!input)
         return;
@@ -451,7 +453,7 @@ void QFcitxInputContext::deleteSurroundingText(int offset, uint _nchar) {
 
     FcitxQtICData *data =
         static_cast<FcitxQtICData *>(proxy->property("icData").value<void *>());
-    QVector<uint> ucsText = data->surroundingText.toUcs4();
+    QVector<unsigned int> ucsText = data->surroundingText.toUcs4();
 
     int cursor = data->surroundingCursor;
     // make nchar signed so we are safer
@@ -470,9 +472,10 @@ void QFcitxInputContext::deleteSurroundingText(int offset, uint _nchar) {
 
     // validates
     if (nchar >= 0 && cursor + offset >= 0 &&
-        cursor + offset + nchar < ucsText.size()) {
+        cursor + offset + nchar <= ucsText.size()) {
         // order matters
-        QVector<uint> replacedChars = ucsText.mid(cursor + offset, nchar);
+        QVector<unsigned int> replacedChars =
+            ucsText.mid(cursor + offset, nchar);
         nchar = QString::fromUcs4(replacedChars.data(), replacedChars.size())
                     .size();
 
@@ -481,11 +484,11 @@ void QFcitxInputContext::deleteSurroundingText(int offset, uint _nchar) {
             start = cursor;
             len = offset;
         } else {
-            start = cursor;
+            start = cursor + offset;
             len = -offset;
         }
 
-        QVector<uint> prefixedChars = ucsText.mid(start, len);
+        QVector<unsigned int> prefixedChars = ucsText.mid(start, len);
         offset = QString::fromUcs4(prefixedChars.data(), prefixedChars.size())
                      .size() *
                  (offset >= 0 ? 1 : -1);
@@ -494,7 +497,8 @@ void QFcitxInputContext::deleteSurroundingText(int offset, uint _nchar) {
     }
 }
 
-void QFcitxInputContext::forwardKey(uint keyval, uint state, bool type) {
+void QFcitxInputContext::forwardKey(unsigned int keyval, unsigned int state,
+                                    bool type) {
     auto proxy = qobject_cast<FcitxQtInputContextProxy *>(sender());
     if (!proxy) {
         return;
@@ -531,8 +535,9 @@ void QFcitxInputContext::createICData(QWidget *w) {
                 SLOT(createInputContextFinished(QByteArray)));
         connect(data.proxy, SIGNAL(commitString(QString)), this,
                 SLOT(commitString(QString)));
-        connect(data.proxy, SIGNAL(forwardKey(uint, uint, bool)), this,
-                SLOT(forwardKey(uint, uint, bool)));
+        connect(data.proxy,
+                SIGNAL(forwardKey(unsigned int, unsigned int, bool)), this,
+                SLOT(forwardKey(unsigned int, unsigned int, bool)));
         connect(
             data.proxy,
             SIGNAL(updateFormattedPreedit(FcitxQtFormattedPreeditList, int)),
@@ -543,7 +548,8 @@ void QFcitxInputContext::createICData(QWidget *w) {
     }
 }
 
-QKeyEvent *QFcitxInputContext::createKeyEvent(uint keyval, uint state,
+QKeyEvent *QFcitxInputContext::createKeyEvent(unsigned int keyval,
+                                              unsigned int state,
                                               bool isRelease,
                                               const QKeyEvent *event) {
     QKeyEvent *newEvent = nullptr;
@@ -622,8 +628,13 @@ bool QFcitxInputContext::filterEvent(const QEvent *event) {
         proxy->focusIn();
         update();
 
+        auto stateToFcitx = state;
+        if (keyEvent->isAutoRepeat()) {
+            // KeyState::Repeat
+            stateToFcitx |= (1u << 31);
+        }
         auto reply =
-            proxy->processKeyEvent(keyval, keycode, state, isRelease,
+            proxy->processKeyEvent(keyval, keycode, stateToFcitx, isRelease,
                                    QDateTime::currentDateTime().toTime_t());
 
         if (Q_UNLIKELY(syncMode_)) {
@@ -699,8 +710,10 @@ void QFcitxInputContext::processKeyEventFinished(QDBusPendingCallWatcher *w) {
     delete watcher;
 }
 
-bool QFcitxInputContext::filterEventFallback(uint keyval, uint keycode,
-                                             uint state, bool isRelease) {
+bool QFcitxInputContext::filterEventFallback(unsigned int keyval,
+                                             unsigned int keycode,
+                                             unsigned int state,
+                                             bool isRelease) {
     Q_UNUSED(keycode);
     if (processCompose(keyval, state, isRelease)) {
         return true;
@@ -734,7 +747,7 @@ FcitxQtInputContextProxy *QFcitxInputContext::validICByWindow(QWidget *w) {
     return data.proxy;
 }
 
-bool QFcitxInputContext::processCompose(uint keyval, uint state,
+bool QFcitxInputContext::processCompose(unsigned int keyval, unsigned int state,
                                         bool isRelease) {
     Q_UNUSED(state);
 
@@ -754,14 +767,13 @@ bool QFcitxInputContext::processCompose(uint keyval, uint state,
     if (status == XKB_COMPOSE_NOTHING) {
         return 0;
     } else if (status == XKB_COMPOSE_COMPOSED) {
-        char buffer[] = {'\0', '\0', '\0', '\0', '\0', '\0', '\0'};
-        int length =
-            xkb_compose_state_get_utf8(xkbComposeState, buffer, sizeof(buffer));
+        std::array<char, 256> buffer;
+        int length = xkb_compose_state_get_utf8(xkbComposeState, buffer.data(),
+                                                buffer.size());
         xkb_compose_state_reset(xkbComposeState);
         if (length != 0) {
-            commitString(QString::fromUtf8(buffer));
+            commitString(QString::fromUtf8(buffer.data(), length));
         }
-
     } else if (status == XKB_COMPOSE_CANCELLED) {
         xkb_compose_state_reset(xkbComposeState);
     }
