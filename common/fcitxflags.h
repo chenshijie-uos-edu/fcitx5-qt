@@ -35,6 +35,7 @@ enum FcitxCapabilityFlag : uint64_t {
     FcitxCapabilityFlag_Sensitive = (1ull << 36),
     FcitxCapabilityFlag_KeyEventOrderFix = (1ull << 37),
     FcitxCapabilityFlag_ReportKeyRepeat = (1ull << 38),
+    FcitxCapabilityFlag_ClientSideInputPanel = (1ull << 39),
 };
 
 enum FcitxTextFormatFlag : int {
@@ -52,6 +53,8 @@ enum FcitxKeyStates {
     FcitxKeyState_Shift = 1 << 0,
     FcitxKeyState_Ctrl = 1 << 2,
 };
+
+enum class FcitxCandidateLayoutHint { NotSet, Vertical, Horizontal };
 
 } // namespace fcitx
 

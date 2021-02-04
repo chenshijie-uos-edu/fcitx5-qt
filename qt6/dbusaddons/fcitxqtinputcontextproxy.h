@@ -32,7 +32,7 @@ public:
     void setDisplay(const QString &display);
     const QString &display() const;
 
-public slots:
+public Q_SLOTS:
     QDBusPendingReply<> focusIn();
     QDBusPendingReply<> focusOut();
     QDBusPendingReply<bool> processKeyEvent(unsigned int keyval,
@@ -49,8 +49,11 @@ public slots:
                                            unsigned int anchor);
     QDBusPendingReply<> setSurroundingTextPosition(unsigned int cursor,
                                                    unsigned int anchor);
+    QDBusPendingReply<> prevPage();
+    QDBusPendingReply<> nextPage();
+    QDBusPendingReply<> selectCandidate(int i);
 
-signals:
+Q_SIGNALS:
     void commitString(const QString &str);
     void currentIM(const QString &name, const QString &uniqueName,
                    const QString &langCode);
@@ -58,6 +61,13 @@ signals:
     void forwardKey(unsigned int keyval, unsigned int state, bool isRelease);
     void updateFormattedPreedit(const FcitxQtFormattedPreeditList &str,
                                 int cursorpos);
+    void updateClientSideUI(const FcitxQtFormattedPreeditList &preedit,
+                            int cursorpos,
+                            const FcitxQtFormattedPreeditList &auxUp,
+                            const FcitxQtFormattedPreeditList &auxDown,
+                            const FcitxQtStringKeyValueList &candidates,
+                            int candidateIndex, int layoutHint, bool hasPrev,
+                            bool hasNext);
     void inputContextCreated(const QByteArray &uuid);
 
 private:
